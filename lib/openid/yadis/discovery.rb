@@ -55,6 +55,7 @@ module OpenID
 
       # Is the response text supposed to be an XRDS document?
       def is_xrds
+        return false if normalized_uri.index('https://www.google.com/accounts/o8/site-xrds')
         return (used_yadis_location?() or
                 @content_type == YADIS_CONTENT_TYPE)
       end
@@ -72,12 +73,35 @@ module OpenID
     # Raises DiscoveryFailure when the HTTP response does not have
     # a 200 code.
     def self.discover(uri)
-      result = DiscoveryResult.new(uri)
+      # Try Google discovery first, fall back to the original discovery
+      original_uri = uri
+      parsed_uri   = URI.parse(uri)
+      uri          = "https://www.google.com/accounts/o8/.well-known/host-meta?hd=#{parsed_uri.host}"
+      result       = DiscoveryResult.new(uri)
+      resp         = nil
       begin
         resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
-      rescue Exception
-        raise DiscoveryFailure.new("Failed to fetch identity URL #{uri} : #{$!}", $!)
+        if resp.code == "200" and m = resp.body.match(/Link: \<([^\>]+)\>/)
+          uri = m[1]
+          resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
+        else
+          resp = nil
+          uri  = original_uri
+        end
+      rescue
+        resp = nil
+        uri  = original_uri
       end
+
+      if resp.nil? or resp.code == "400"
+        result = DiscoveryResult.new(uri)
+        begin
+          resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
+        rescue Exception
+          raise DiscoveryFailure.new("Failed to fetch identity URL #{uri} : #{$!}", $!)
+        end
+      end
+
       if resp.code != "200" and resp.code != "206"
         raise DiscoveryFailure.new(
                 "HTTP Response status from identity URL host is not \"200\"."\
