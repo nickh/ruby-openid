@@ -218,6 +218,7 @@ module OpenID
     # Raises DiscoveryFailure when no OpenID server can be found for
     # this URL.
     def begin(openid_identifier, anonymous=false)
+      $openid_context = :begin
       manager = discovery_manager(openid_identifier)
       service = manager.get_next_service(&method(:discover))
 
@@ -279,6 +280,7 @@ module OpenID
     # indicated by the status attribute, which will be one of
     # SUCCESS, CANCEL, FAILURE, or SETUP_NEEDED.
     def complete(query, current_url)
+      $openid_context = :complete
       message = Message.from_post_args(query)
       mode = message.get_arg(OPENID_NS, 'mode', 'invalid')
       begin

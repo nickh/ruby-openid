@@ -74,27 +74,22 @@ module OpenID
     # a 200 code.
     def self.discover(uri)
       # Try Google discovery first, fall back to the original discovery
-      original_uri = uri
-      parsed_uri   = URI.parse(uri)
-      uri          = "https://www.google.com/accounts/o8/.well-known/host-meta?hd=#{parsed_uri.host}"
-      result       = DiscoveryResult.new(uri)
-      resp         = nil
-      begin
-        resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
-        if resp.code == "200" and m = resp.body.match(/Link: \<([^\>]+)\>/)
-          uri = m[1]
-          resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
-        else
-          resp = nil
-          uri  = original_uri
+      result     = DiscoveryResult.new(uri)
+      resp       = begin
+        parsed_uri           = URI.parse(uri)
+        google_site_xrds_uri = "https://www.google.com/accounts/o8/.well-known/host-meta?hd=#{parsed_uri.host}"
+        google_response      = OpenID.fetch(google_site_xrds_uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
+        if google_response.code == "200" and m = google_response.body.match(/Link: \<([^\>]+)\>/)
+          google_xrds_uri = m[1]
+          google_response = OpenID.fetch(google_xrds_uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
+          google_response.final_url = uri
+          google_response
         end
       rescue
-        resp = nil
-        uri  = original_uri
+        nil
       end
 
       if resp.nil? or resp.code == "400"
-        result = DiscoveryResult.new(uri)
         begin
           resp = OpenID.fetch(uri, nil, {'Accept' => YADIS_ACCEPT_HEADER})
         rescue Exception
@@ -115,7 +110,7 @@ module OpenID
       # we already have it
       result.content_type = resp['content-type']
 
-      result.xrds_uri = self.where_is_yadis?(resp)
+      result.xrds_uri = self.where_is_google?(resp) || self.where_is_yadis?(resp)
 
       if result.xrds_uri and result.used_yadis_location?
         begin
@@ -130,12 +125,34 @@ module OpenID
             exc.identity_url = result.normalized_uri
             raise exc
         end
-
         result.content_type = resp['content-type']
       end
 
       result.response_text = resp.body
       return result
+    end
+
+    def self.where_is_google?(resp)
+      return nil unless $openid_context == :complete
+      xrds_tree = Yadis::parseXRDS(resp.body)
+      services  = Yadis::services(xrds_tree)
+
+      # Check for googleism
+      # - service with OPENID_IDP_2_0_TYPE and service with "http://www.iana.org/assignments/relation/describedby" type
+      is_idp_2_0   = false
+      uri_template = nil
+      services.each do |service|
+        types        = service.elements.each('Type/text()')
+        is_idp_2_0   = true if types.include?(OPENID_IDP_2_0_TYPE)
+        uri_template = REXML::XPath::first(service, '//openid:URITemplate/').text rescue nil
+      end
+
+      # Figure out the claimed_id...
+      if is_idp_2_0 and uri_template
+        return uri_template.gsub('{%uri}',URI.escape('http://joshvr.com/openid?id=110014680091762318694', ':/?='))
+      else
+        return nil
+      end
     end
 
     # Given a HTTPResponse, return the location of the Yadis
